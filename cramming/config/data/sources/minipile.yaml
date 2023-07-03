@@ -1,0 +1,12 @@
+# The wikipedia en dataset, drawn from it huggingface mirror
+minipile:
+  provider: huggingface
+  partition: en
+  split: train
+  name: JeanKaddour/minipile
+
+  streaming: False
+
+  # source-specific cleaning rules?
+  remove_columns:
+  concatenate_successive_entries: 0

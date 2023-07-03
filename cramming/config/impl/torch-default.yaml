@@ -20,3 +20,7 @@ foreach_optimizer: False
 
 # Dynamo
 optimizer_context: # can be: aot_autograd_speedup, nvfuser_global, aot_nvfuser
+
+# torch.compile
+compile: True
+no_jit_compilation: True

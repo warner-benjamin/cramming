@@ -1,14 +1,14 @@
 defaults:
   - optim: adam
   - tasks:
-      - cola
+      # - cola
       - mnli
-      - mrpc
-      - qnli
-      - qqp
-      - rte
-      - sst2
-      - stsb
+      # - mrpc
+      # - qnli
+      # - qqp
+      # - rte
+      # - sst2
+      # - stsb
 #      - wnli
 
 optim:
@@ -27,6 +27,10 @@ max_seq_length: 128
 batch_size: 16
 batch_size_ramp: 0
 
+# torch.compile
+compile: False
+no_jit_compilation: False
+
 gradient_clipping:
 limited_decay_keys: [bias, LayerNorm.bias, LayerNorm.weight] # no weight decay for these layers
 scheduler: cosine-decay
@@ -36,7 +40,7 @@ optim_mod:
 epochs: 5
 
 # These options are only used for scheduling:
-warmup_steps: 0.1
+warmup_steps: 0.2
 cooldown_steps: 0
 steps: 10_000
 

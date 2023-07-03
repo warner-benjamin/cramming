@@ -15,7 +15,19 @@ from torch.distributed.optim import ZeroRedundancyOptimizer
 
 from .utils import group_parameters, prepare_pretraining_dataloader, update_ema, updated_latest_weight_average, TORCH2
 from .optimizers.schedulers import get_schedule_fn
-from .optimizers import Adahessian, Shampoo, LARS, SAM, ProgressiveBatching
+from .optimizers import Adahessian, Shampoo, LARS, SAM, ProgressiveBatching, StableAdamWUnfused, SophiaG
+
+try:
+    from adan import Adan
+    ADAN = True
+except ImportError:
+    ADAN = False
+
+try:
+    from lion_pytorch import Lion
+    LION = True
+except ImportError:
+    LION = False
 
 log = logging.getLogger(__name__)
 _default_setup = dict(device=torch.device("cpu"), dtype=torch.float)
@@ -56,8 +68,9 @@ class TorchEngine(torch.nn.Module):
         # Modules like LN are unsupported on CPU amp, so mixed precision args are disregarded on CPU
         # See https://pytorch.org/docs/stable/amp.html#cpu-op-specific-behavior and check for layer_norm
         enable_scaling = self.cfg_impl.grad_scaling and self.cfg_impl.mixed_precision and setup["device"].type != "cpu"
-        self.scaler = torch.cuda.amp.GradScaler(enabled=enable_scaling)
         amp_dtype = getattr(torch, self.cfg_impl.mixed_precision_target_dtype) if setup["device"].type != "cpu" else torch.bfloat16
+        if amp_dtype == torch.float16:
+            self.scaler = torch.cuda.amp.GradScaler(enabled=enable_scaling)
         self.amp_settings = dict(device_type=setup["device"].type, enabled=enabled, dtype=amp_dtype)
 
         # Optional batch size rampup
@@ -67,6 +80,7 @@ class TorchEngine(torch.nn.Module):
         self.accumulation_steps_expected = self.current_batch_size // self.cfg_impl.microbatch_size
         self.accumulated_samples = 0  # Record the number of samples seen, reset after triggering gradient update
         self.steps = 0  # Record the number of times "step" has been triggered
+        self.hess_steps = 0
 
         # Optional sequence curriculum:
         self.sequence_curriculum = "sequence_curriculum" in cfg_train
@@ -88,6 +102,7 @@ class TorchEngine(torch.nn.Module):
 
         # Choose setup and move model
         self.setup = setup
+        # self.setup['dtype'] = torch.bfloat16
         model.to(**self.setup)
 
         # Old-school tracing?
@@ -132,9 +147,16 @@ class TorchEngine(torch.nn.Module):
         with torch.autocast(**self.amp_settings):
             return self.model(*inputs, **kwargs)
 
+    # def forward(self, *inputs, **kwargs):
+    #     with torch.autocast(**self.amp_settings):
+    #         return self.model(*inputs, hessian=self.hess_steps % 10 == 9, **kwargs)
+
     def backward(self, loss):
         self.accumulated_samples += self.cfg_impl.microbatch_size
-        return self.scaler.scale(loss / self.accumulation_steps_expected).backward()
+        if self.amp_settings['dtype'] == torch.float16:
+            return self.scaler.scale(loss / self.accumulation_steps_expected).backward()
+        else:
+            return (loss / self.accumulation_steps_expected).backward()
 
     @torch.no_grad()
     def forward_inference(self, *inputs, **kwargs):
@@ -155,12 +177,22 @@ class TorchEngine(torch.nn.Module):
             if self.cfg_train.gradient_clipping is not None:
                 self.scaler.unscale_(self.optimizer)
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.cfg_train.gradient_clipping, norm_type=2.0)
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
+            if self.amp_settings['dtype'] == torch.float16:
+                self.scaler.step(self.optimizer)
+                self.scaler.update()
+            else:
+                self.optimizer.step()
             self.optimizer.zero_grad()
             self.schedule_batch_size()
             self.schedule_curriculum()
             self.moving_average_computation()
+            # self.scaler.step(self.optimizer, bs=self.current_batch_size, update_hessian=self.hess_steps % 10 == 10)
+            # self.scaler.update()
+            # self.optimizer.zero_grad()
+            # self.schedule_batch_size()
+            # self.schedule_curriculum()
+            # self.moving_average_computation()
+            # self.hess_steps += 1
         self.scheduler.step()  # Trigger in every step, otherwise things get annoying with grad accumulation
 
     def set_train_batch_size(self, batch_size):
@@ -469,6 +501,14 @@ def _load_optimizer(model, cfg_train, cfg_impl):
         optimizer_class = Shampoo
     elif cfg_train.optim.type == "AdaHessian":
         optimizer_class = Adahessian
+    elif cfg_train.optim.type == "Adan" and ADAN:
+        optimizer_class = Adan
+    elif cfg_train.optim.type == "Lion" and LION:
+        optimizer_class = Lion
+    elif cfg_train.optim.type == "StableAdam":
+        optimizer_class = StableAdamWUnfused
+    elif cfg_train.optim.type == "Sophia":
+        optimizer_class = SophiaG
     else:
         raise ValueError(f"Invalid optimizer {cfg_train.optim.type} given.")
     optimizer_args = {k: v for k, v in cfg_train.optim.items() if k != "type"}

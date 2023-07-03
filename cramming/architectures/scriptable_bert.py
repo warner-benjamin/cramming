@@ -7,6 +7,7 @@ from transformers import PretrainedConfig, PreTrainedModel
 
 from transformers import AutoConfig, AutoModel, AutoModelForMaskedLM, AutoModelForSequenceClassification
 from omegaconf import OmegaConf
+from torch.distributions import Categorical
 
 
 from .components import (
@@ -185,6 +186,7 @@ class ScriptableLMForPreTraining(PreTrainedModel):
         attention_mask: Optional[torch.Tensor] = None,
         labels: Optional[torch.Tensor] = None,
         token_type_ids: Optional[torch.Tensor] = None,
+        hessian: bool = False
     ):
         outputs = self.encoder(input_ids, attention_mask)
         outputs = outputs.view(-1, outputs.shape[-1])
@@ -204,7 +206,7 @@ class ScriptableLMForPreTraining(PreTrainedModel):
     # depending on how MLM is running
     # for this reason, the code has to fall back to eager mode there
     @maybe_skip_compile()
-    def _forward_dynamic(self, outputs: torch.Tensor, labels: Optional[torch.Tensor] = None):
+    def _forward_dynamic(self, outputs: torch.Tensor, labels: Optional[torch.Tensor] = None, hessian: bool = False):
         if labels is not None:
             labels = labels.view(-1)
             mask_positions = labels.view(-1) != self.loss_fn.ignore_index
@@ -212,6 +214,9 @@ class ScriptableLMForPreTraining(PreTrainedModel):
             labels = labels[mask_positions]
 
         outputs = self.decoder(self.prediction_head(outputs))
+        if hessian:
+            dist = Categorical(logits=outputs)
+            labels = dist.sample()
         if labels is not None:
             masked_lm_loss = self.loss_fn(outputs, labels)
         else:
@@ -253,6 +258,7 @@ class ScriptableLMForSequenceClassification(PreTrainedModel):
         attention_mask: Optional[torch.Tensor] = None,
         labels: Optional[torch.Tensor] = None,
         token_type_ids: Optional[torch.Tensor] = None,
+         hessian: bool = False
     ):
         logits = self.head(self.pooler(self.encoder(input_ids, attention_mask)))
 

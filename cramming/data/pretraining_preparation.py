@@ -122,13 +122,21 @@ def preprocess_dataset(cfg_data, download_path, num_threads=1, max_raw_chunk_siz
     raw_datasets = []
     for name, details in cfg_data.sources.items():
         if details.provider == "huggingface":
-            raw_dataset = datasets.load_dataset(
-                name,
-                details.partition,
-                split=details.split,
-                cache_dir=download_path,
-                streaming=details.streaming,
-            )
+            if 'minipile' in name:
+                raw_dataset = datasets.load_dataset(
+                    details.name,
+                    details.partition,
+                    split=details.split,
+                    streaming=details.streaming,
+                )
+            else:
+                raw_dataset = datasets.load_dataset(
+                    name,
+                    details.partition,
+                    split=details.split,
+                    cache_dir=download_path,
+                    streaming=details.streaming,
+                )
             if details.remove_columns is not None:
                 raw_dataset = raw_dataset.remove_columns(details.remove_columns)
             if details.concatenate_successive_entries > 0:
@@ -211,7 +219,7 @@ def _huggingface_preprocessing(raw_dataset, tokenizer, cfg_data, num_threads=4):
     max_seq_length = tokenizer.model_max_length
     map_setup = dict(
         batched=True,
-        batch_size=1024,
+        batch_size=128,
         num_proc=num_threads if num_threads > 0 else None,
         # load_from_cache_file=False,
         # keep_in_memory=False,
